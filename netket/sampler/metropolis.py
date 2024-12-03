@@ -49,7 +49,11 @@ class MetropolisSamplerState(SamplerState):
     state of the transition rule.
     """
 
-    σ: jnp.ndarray = struct.field(sharded=True)
+    σ: jnp.ndarray = struct.field(
+        sharded=struct.ShardedFieldSpec(
+            sharded=True, deserialization_function="relaxed-ignore-errors"
+        )
+    )
     """Current batch of configurations in the Markov chain."""
     log_prob: jnp.ndarray = struct.field(sharded=True, serialize=False)
     """Log probabilities of the current batch of configurations σ in the Markov chain."""
@@ -211,6 +215,7 @@ class MetropolisSampler(Sampler):
 
     The dtype of the sampled states can be chosen.
     """
+
     rule: MetropolisRule = None
     """The Metropolis transition rule."""
     sweep_size: int = struct.field(pytree_node=False, default=None)
@@ -600,6 +605,31 @@ def MetropolisExchange(
     This scheme should be used then only when sampling in a
     region where :math:`\sum_i s_i = \mathrm{constant}` is needed,
     otherwise the sampling would be strongly not ergodic.
+
+    .. warning::
+
+        If you are working with systems where the number of nodes in the physical lattice
+        does not match the number of degrees of freedom, you must be careful!
+
+        A typical example is a system of Spin-1/2 fermions on a lattice with N sites, where the
+        first N degrees of freedom correspond to the spin down degrees of freedom and the
+        next N degrees of freedom correspond to the spin up degrees of freedom.
+
+        In this case, you tipically want to exchange only degrees of freedom of the same type.
+        A simple way to achieve this is to double the graph:
+
+        .. code-block:: python
+
+            import netket as nk
+            g = nk.graph.Square(5)
+            hi = nkx.hilbert.SpinOrbitalFermions(g.n_nodes, s=0.5)
+
+            exchange_graph = nk.graph.disjoint_union(g, g)
+            print("Exchange graph size:", exchange_graph.n_nodes)
+
+            sa = nk.sampler.MetropolisExchange(hi, graph=exchange_graph, d_max=1)
+
+
 
     Args:
         hilbert: The Hilbert space to sample.
