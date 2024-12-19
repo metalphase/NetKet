@@ -153,7 +153,9 @@ class ResGCNN_FFT(nn.Module):
             z = self.equivariant_layers[layer](x)
             z = self.activation(z)
             z = self.equivariant_layers[layer+1](z)
-            x = x + z
+
+            t = self.param("t_{}".format(layer), zeros, [1], jnp.float64)
+            x = x + (t * z)
 
         # Apply our output activation (identity function by default)
         x = self.output_activation(x)
@@ -273,10 +275,16 @@ class ResGCNN_Irrep(nn.Module):
         x = self.dense_symm(x)
 
         for layer in range(self.layers - 1):
+
+            # We want to replicate the structure of:
+            # h^{(i+1)} = h^{(i)} + t_{i}W_{2}^{(i)} \circ \text{relu}[W_1^{(i)}\circ h^{(i)}]
+
             z = self.equivariant_layers[layer](x)
             z = self.activation(z)
             z = self.equivariant_layers[layer+1](z)
-            x = x + z
+
+            t = self.param("t_{}".format(layer), zeros, [1], jnp.float64)
+            x = x + (t * z)
 
         x = self.output_activation(x)
 
