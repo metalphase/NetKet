@@ -136,6 +136,7 @@ class HistoryDict:
         from .history import History
 
         def _recompose(hist_dict):
+            # hist_dict = {k: np.array(v) for k, v in hist_dict.items()}
             if "Mean" in hist_dict:
                 return History(hist_dict, main_value_name="Mean")
             else:
@@ -148,3 +149,6 @@ class HistoryDict:
             return False
 
         return cls(jax.tree.map(_recompose, data, is_leaf=_is_leaf))
+
+    def _ipython_key_completions_(self):
+        return self._data.keys()

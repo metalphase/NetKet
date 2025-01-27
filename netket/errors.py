@@ -657,7 +657,7 @@ class SymmModuleInvalidInputShape(NetketError):
 
     def __init__(self, name, x):
         super().__init__(
-            """
+            f"""
             Input to DenseSymmFFT has {x.ndim =} but 3 are required.
 
             The input format is (B,C,L), aka (batches, features/channels, length). If
@@ -1067,6 +1067,34 @@ class UndeclaredSpinOderingWarning(NetketWarning):
                 This warning will be shown once per day during interactive sessions, and always in scripts and MPI/SLURM jobs unless silenced.
                 """
             )
+        )
+
+
+class ParameterMismatchError(NetketError):
+    """
+    Error thrown when the structure of the parameters does not match the expected structure.
+
+    This error is thrown when you attempt to modify the `parameters` or `variables` attribute of a
+    :class:`~netket.vqs.VariationalState` with a structure that does not match the previous structure.
+
+    """
+
+    def __init__(self, expected_structure, structure):
+        super().__init__(
+            f"""
+            The structure of the parameters does not match the expected structure.
+
+            Expected structure: {expected_structure}
+            Structure of the parameters: {structure}
+
+            This error is because you attempted to modify the ``parameters`` or ``variables`` attribute of a
+            variational state with a structure that does not match the previous structure.
+
+            To fix this error, you should ensure that the structure of the parameters you are trying to assign
+            matches the structure of the parameters that were already present in the variational state.
+
+            If you believe this error was thrown in error, or it prevents you from doing something, please open an issue.
+            """
         )
 
 

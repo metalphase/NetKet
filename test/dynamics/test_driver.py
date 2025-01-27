@@ -18,6 +18,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 import numpy as np
+import copy
+import scipy
 
 import netket as nk
 import netket.experimental as nkx
@@ -107,41 +109,37 @@ def l4_norm(x):
     ) ** (1.0 / 4.0)
 
 
+@common.skipif_sharding
 @pytest.mark.parametrize("error_norm", ["euclidean", "qgt", "maximum", l4_norm])
 @pytest.mark.parametrize("solver", adaptive_step_solvers)
 @pytest.mark.parametrize("propagation_type", ["real", "imag"])
-@pytest.mark.parametrize("disable_jit", [False, True])
-def test_one_adaptive_step(solver, error_norm, propagation_type, disable_jit):
-    if disable_jit:
-        common.skipif_sharding()
+def test_one_adaptive_step(solver, error_norm, propagation_type):
 
-    with common.set_config("NETKET_EXPERIMENTAL_DISABLE_ODE_JIT", disable_jit):
-        ha, vstate, _ = _setup_system(L=2)
-        te = nkx.TDVP(
-            ha,
-            vstate,
-            solver,
-            qgt=nk.optimizer.qgt.QGTJacobianDense(holomorphic=True),
-            propagation_type=propagation_type,
-            error_norm=error_norm,
-        )
-        te.run(T=0.01, callback=_stop_after_one_step)
-        assert te.t > 0.0
+    ha, vstate, _ = _setup_system(L=2)
+    te = nkx.TDVP(
+        ha,
+        vstate,
+        solver,
+        qgt=nk.optimizer.qgt.QGTJacobianDense(holomorphic=True),
+        propagation_type=propagation_type,
+        error_norm=error_norm,
+    )
+    te.run(T=0.01, callback=_stop_after_one_step)
+    assert te.t > 0.0
 
 
 @pytest.mark.parametrize("error_norm", ["euclidean", "qgt", "maximum", l4_norm])
 @pytest.mark.parametrize("solver", adaptive_step_solvers)
 def test_one_adaptive_schmitt(solver, error_norm):
-    with common.set_config("NETKET_EXPERIMENTAL_DISABLE_ODE_JIT", True):
-        ha, vstate, _ = _setup_system(L=2)
-        te = nkx.driver.TDVPSchmitt(
-            ha,
-            vstate,
-            solver,
-            error_norm=error_norm,
-        )
-        te.run(T=0.01, callback=_stop_after_one_step)
-        assert te.t > 0.0
+    ha, vstate, _ = _setup_system(L=2)
+    te = nkx.driver.TDVPSchmitt(
+        ha,
+        vstate,
+        solver,
+        error_norm=error_norm,
+    )
+    te.run(T=0.01, callback=_stop_after_one_step)
+    assert te.t > 0.0
 
 
 @pytest.mark.parametrize("solver", all_solvers)
@@ -186,15 +184,14 @@ def test_one_step_lindbladian(solver):
 
 def test_dt_bounds():
     ha, vstate, _ = _setup_system(L=2, dtype=np.complex128)
-    with common.set_config("NETKET_EXPERIMENTAL_DISABLE_ODE_JIT", True):
-        te = nkx.TDVP(
-            ha,
-            vstate,
-            nkx.dynamics.RK23(dt=0.1, adaptive=True, dt_limits=(1e-2, None)),
-            propagation_type="real",
-        )
-        with pytest.warns(UserWarning, match="ODE integrator: dt reached lower bound"):
-            te.run(T=0.1, callback=_stop_after_one_step)
+    te = nkx.TDVP(
+        ha,
+        vstate,
+        nkx.dynamics.RK23(dt=0.1, adaptive=True, dt_limits=(1e-2, None)),
+        propagation_type="real",
+    )
+    with pytest.warns(UserWarning, match="ODE integrator: dt reached lower bound"):
+        te.run(T=0.1, callback=_stop_after_one_step)
 
 
 @pytest.mark.parametrize("solver", all_solvers)
@@ -313,6 +310,90 @@ def test_change_norm():
 
     with pytest.raises(ValueError):
         driver.error_norm = "assd"
+
+
+def exact_time_evolution(H, psi0, T, dt, obs):
+    H_matrix = H.to_dense()
+    initial_state = psi0
+    times = np.linspace(0, T, int(T / dt) + 1)
+    expectations = {name: [] for name in obs}
+
+    # Precompute the dense matrices for the observables
+    obs_matrices = {name: op.to_dense() for name, op in obs.items()}
+
+    for t in times:
+        U = scipy.sparse.linalg.expm(-1j * H_matrix * t)
+        psi_t = U @ initial_state
+        for name, op_matrix in obs_matrices.items():
+            exp_t = np.vdot(psi_t, op_matrix @ psi_t).real
+            expectations[name].append(exp_t)
+
+    return expectations
+
+
+# This test verifies a case where SNR = Rho = 0 which used to give NaNs in TDVP Schmitt but not standard TDVP.
+# See bug report https://github.com/orgs/netket/discussions/1959 and PR to fix it
+# https://github.com/netket/netket/pull/1960
+def test_tdvp_drivers():
+    """Test time evolution comparing TDVP methods against exact evolution for a mean-field"""
+    L = 2
+    total_time = 0.2
+    dt = 0.001
+
+    hi = nk.hilbert.Spin(0.5, L)
+    h = 1.0
+    J = 1.0
+    h_eff = h + J
+
+    H1 = nk.operator.LocalOperator(hi, dtype=np.complex128)
+    for i in range(L):
+        H1 -= h_eff * nk.operator.spin.sigmaz(hi, i)
+
+    modelExact = nk.models.LogStateVector(hi)
+    sa = nk.sampler.MetropolisLocal(hilbert=hi)
+
+    vs_schmitt = nk.vqs.MCState(
+        model=modelExact,
+        sampler=sa,
+        n_samples=2**10,
+        seed=214748364,
+    )
+    vs_tdvp = copy.copy(vs_schmitt)
+    vs_exact = copy.copy(vs_schmitt).to_array()
+
+    obs = {
+        "sum_sx": sum(nk.operator.spin.sigmax(hi, i) for i in range(L)),
+        "sum_sy": sum(nk.operator.spin.sigmay(hi, i) for i in range(L)),
+    }
+
+    integrator = nkx.dynamics.RK4(dt=dt)
+
+    # Exact time evolution
+    expectations = exact_time_evolution(H1, vs_exact, total_time, dt, obs)
+    sx_exact = expectations["sum_sx"]
+    sy_exact = expectations["sum_sy"]
+
+    # TDVPSchmitt time evolution
+    te_schmitt = nkx.driver.TDVPSchmitt(H1, vs_schmitt, integrator, holomorphic=True)
+    log_schmitt = nk.logging.RuntimeLog()
+    te_schmitt.run(T=total_time, out=log_schmitt, obs=obs)
+
+    # TDVP time evolution
+    te_tdvp = nkx.driver.TDVP(H1, vs_tdvp, integrator)
+    log_tdvp = nk.logging.RuntimeLog()
+    te_tdvp.run(T=total_time, out=log_tdvp, obs=obs)
+
+    sx_schmitt = np.array(log_schmitt.data["sum_sx"]).real
+    sy_schmitt = np.array(log_schmitt.data["sum_sy"]).real
+
+    np.testing.assert_allclose(sx_schmitt, sx_exact)
+    np.testing.assert_allclose(sy_schmitt, sy_exact)
+
+    sx_tdvp = np.array(log_tdvp.data["sum_sx"]).real
+    sy_tdvp = np.array(log_tdvp.data["sum_sy"]).real
+
+    np.testing.assert_allclose(sx_tdvp, sx_exact)
+    np.testing.assert_allclose(sy_tdvp, sy_exact)
 
 
 def test_float32_dtype():
