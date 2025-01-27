@@ -154,7 +154,7 @@ class ResGCNN_FFT(nn.Module):
             z = self.activation(z)
             z = self.equivariant_layers[layer+1](z)
 
-            t = self.param("t_{}".format(layer), zeros, [1], jnp.float64)
+            t = self.param("t_{}".format(layer), zeros, [1], self.param_dtype)
             x = x + (t * z)
 
         # Apply our output activation (identity function by default)
@@ -283,7 +283,7 @@ class ResGCNN_Irrep(nn.Module):
             z = self.activation(z)
             z = self.equivariant_layers[layer+1](z)
 
-            t = self.param("t_{}".format(layer), zeros, [1], jnp.float64)
+            t = self.param("t_{}".format(layer), zeros, [1], self.param_dtype)
             x = x + (t * z)
 
         x = self.output_activation(x)
