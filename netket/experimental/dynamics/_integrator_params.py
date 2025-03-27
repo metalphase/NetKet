@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from netket.utils import struct
 
@@ -29,7 +28,7 @@ class IntegratorParameters(struct.Pytree):
     rtol: float
     """The tolerance for the relative error on the solution."""
 
-    dt_limits: Optional[LimitsDType] = struct.field(pytree_node=False)
+    dt_limits: LimitsDType | None = struct.field(pytree_node=False)
     """The extremal accepted values for the time-step size `dt`."""
 
     def __init__(
@@ -37,7 +36,7 @@ class IntegratorParameters(struct.Pytree):
         dt: float,
         atol: float = 0.0,
         rtol: float = 1e-7,
-        dt_limits: Optional[LimitsDType] = None,
+        dt_limits: LimitsDType | None = None,
     ):
         r"""
         Args:

@@ -36,6 +36,7 @@ from netket.utils import (
     wrap_afun,
     wrap_to_support_scalar,
     timing,
+    _serialization as serialization_utils,
 )
 from netket.utils.types import PyTree, SeedT, NNInitFunc
 from netket.optimizer import LinearOperator
@@ -227,6 +228,26 @@ class MCState(VariationalState):
                 but will trade a higher computational cost for lower memory cost.
         """
         super().__init__(sampler.hilbert)
+
+        # TODO: Move this somewhere else below?
+        # If variables is specified manually, we will enforce that it's leafs are
+        # jax arrays and that it has the good 'replicated sharding'
+        # This assumption is needed for saving and loading of those states, and could
+        # be broken if variables is malformed.
+        if variables is not None:
+            # TODO: Always have shardings...
+            if config.netket_experimental_sharding:
+                par_sharding = jax.sharding.PositionalSharding(
+                    jax.devices()
+                ).replicate()
+            else:
+                par_sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+            variables = jax.tree_util.tree_map(
+                lambda x: jax.lax.with_sharding_constraint(
+                    jnp.asarray(x), par_sharding
+                ),
+                variables,
+            )
 
         # Init type 1: pass in a model
         if model is not None:
@@ -563,9 +584,8 @@ class MCState(VariationalState):
                     state=self.sampler_state,
                     chain_length=n_discard_per_chain,
                 )
-                # If timer is not None, we are timing, so we should block
-                if timer is not None:
-                    _.block_until_ready()
+                # This won't actually block unless we are really timing
+                timer.block_until_ready(_)
 
         self._samples, self.sampler_state = self.sampler.sample(
             self._sampler_model,
@@ -832,7 +852,9 @@ def serialize_MCState(vstate):
         sampler_state = vstate.sampler_state
 
     state_dict = {
-        "variables": serialization.to_state_dict(vstate.variables),
+        "variables": serialization.to_state_dict(
+            serialization_utils.remove_prngkeys(vstate.variables)
+        ),
         "sampler_state": serialization.to_state_dict(sampler_state),
         "n_samples": vstate.n_samples,
         "n_discard_per_chain": vstate.n_discard_per_chain,
@@ -851,6 +873,7 @@ def deserialize_MCState(vstate, state_dict):
         jnp.asarray,
         serialization.from_state_dict(vstate.variables, state_dict["variables"]),
     )
+    vars = serialization_utils.restore_prngkeys(vstate.variables, vars)
     if config.netket_experimental_sharding:
         vars = jax.tree_util.tree_map(
             lambda x, y: jax.lax.with_sharding_constraint(jnp.asarray(y), x.sharding),

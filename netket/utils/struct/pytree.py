@@ -1,5 +1,4 @@
 import dataclasses
-import inspect
 import typing as tp
 from typing import Any
 from collections.abc import Callable
@@ -37,6 +36,8 @@ class PytreeMeta(ABCMeta):
     """
 
     def __call__(cls: type[P], *args: tp.Any, **kwargs: tp.Any) -> P:
+        __tracebackhide__ = True
+
         obj: P = cls.__new__(cls, *args, **kwargs)
 
         # set things before init
@@ -200,13 +201,21 @@ class Pytree(metaclass=PytreeMeta):
         # If no annotations in this class, skip, otherwise we'd process
         # parent's annotations twice
         if "__annotations__" in cls.__dict__:
-            # fields that are only type annotations, feed them forward
+            # fields that are only type annotations, but do not explicitly declare
+            # a struct.field(), feed them forward and treat as standard fields.
             for field, _ in cls.__annotations__.items():
                 if field not in all_fields:
                     _value = dataclasses.field()
                     _value.name = field
                     all_fields[field] = _value
                     data_fields.add(field)
+
+                    # If field is in class_vars, it has a default value declared.
+                    # this can be overridden by subclasses.
+                    if field in class_vars:
+                        # has default value
+                        value = class_vars[field]
+                        default_setters[field] = partial(identity, value)
 
         # Set mutable to be inherited from parent, or false otherwise
         if mutable is None:
@@ -263,32 +272,12 @@ class Pytree(metaclass=PytreeMeta):
         cls._pytree__cachedprop_fields = cached_prop_fields
         cls._pytree__init_fields = init_fields
 
-        # TODO: clean up this in the future once minimal supported version is 0.4.7
-        if (
-            "flatten_func"
-            in inspect.signature(jax.tree_util.register_pytree_with_keys).parameters
-        ):
-            jax.tree_util.register_pytree_with_keys(
-                cls,
-                partial(
-                    cls._pytree__flatten,
-                    with_key_paths=True,
-                ),
-                cls._pytree__unflatten,
-                flatten_func=partial(
-                    cls._pytree__flatten,
-                    with_key_paths=False,
-                ),
-            )
-        else:
-            jax.tree_util.register_pytree_with_keys(
-                cls,
-                partial(
-                    cls._pytree__flatten,
-                    with_key_paths=True,
-                ),
-                cls._pytree__unflatten,
-            )
+        jax.tree_util.register_pytree_with_keys(
+            cls,
+            partial(cls._pytree__flatten, with_key_paths=True),
+            cls._pytree__unflatten,
+            flatten_func=partial(cls._pytree__flatten, with_key_paths=False),
+        )
 
         serialization.register_serialization_state(
             cls,
@@ -336,6 +325,20 @@ class Pytree(metaclass=PytreeMeta):
 
     def __post_init__(self):
         pass
+
+    def __process_deserialization_updates__(self, updates):
+        """
+        Internal function used to modify a posteriori how a
+        PyTree is deserialized.
+
+        This is fed a dictionary of {'attribute names':values}
+        that will be used to call `self.replace(**updates)`,
+        and should return a modified dictionary.
+
+        Can be for example used to support backward compatible
+        deserialization.
+        """
+        return updates
 
     @classmethod
     def _pytree__flatten(
@@ -442,10 +445,11 @@ class Pytree(metaclass=PytreeMeta):
 
             # handle PRNG arrays: if target is a prng key array we unwrap it
             _pytree_prng_orig_value = dataclasses.MISSING
-            if isinstance(pytree, jax.Array) and jnp.issubdtype(
-                pytree.dtype, jax.dtypes.prng_key
+            if isinstance(value, jax.Array) and jnp.issubdtype(
+                value.dtype, jax.dtypes.prng_key
             ):
-                value = jax.random.key_data(pytree)
+                _pytree_prng_orig_value = jax.random.key_impl(value)
+                value = jax.random.key_data(value)
                 # return jax.random.wrap_key_data(source_data, jax.random.key_impl(target_maybe_key))
                 # return jax.random.key_data(maybe_key)
 
@@ -468,7 +472,7 @@ class Pytree(metaclass=PytreeMeta):
             # rewrap prng arrays
             if _pytree_prng_orig_value is not dataclasses.MISSING:
                 updates[name] = jax.random.wrap_key_data(
-                    updates[name], impl=jax.random.key_impl(_pytree_prng_orig_value)
+                    updates[name], impl=_pytree_prng_orig_value
                 )
 
         if state:
@@ -478,7 +482,10 @@ class Pytree(metaclass=PytreeMeta):
                 f" restoring an instance of {type(pytree).__name__}"
                 f" at path {serialization.current_path()}"
             )
-        return pytree.replace(**updates)
+
+        updates = pytree.__process_deserialization_updates__(updates)
+        new_pytree = pytree.replace(**updates)
+        return new_pytree
 
     def replace(self: P, **kwargs: tp.Any) -> P:
         """

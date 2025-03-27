@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Iterable, Optional, TYPE_CHECKING
+from typing import Any, Iterable, TYPE_CHECKING
 from numbers import Number
 
 import numpy as np
@@ -120,27 +120,29 @@ class History:
 
         if is_scalar(values):
             values = {"value": values}
-            main_value_name = "value"
             single_value = True
 
         elif hasattr(values, "__array__"):
             values = {"value": values}
-            main_value_name = "value"
             single_value = True
 
         elif hasattr(values, "to_compound"):
             main_value_name, values = values.to_compound()
+            single_value = len(values.keys()) == 1
 
         elif hasattr(values, "to_dict"):
             values = values.to_dict()
+            single_value = len(values.keys()) == 1
 
         elif isinstance(values, dict) or hasattr(values, "items"):
-            pass
+            single_value = len(values.keys()) == 1
 
         else:
             values = {"value": [values]}
-            main_value_name = "value"
             single_value = True
+
+        if single_value:
+            main_value_name = list(values.keys())[0]
 
         value_dict = {"iters": iters}
         keys = []
@@ -174,7 +176,7 @@ class History:
         self._keys = keys
 
     @property
-    def main_value_name(self) -> Optional[str]:
+    def main_value_name(self) -> str | None:
         """The name of the main value in this history object, if defined."""
         return self._value_name
 

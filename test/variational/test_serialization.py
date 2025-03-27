@@ -13,25 +13,25 @@
 # limitations under the License.
 
 
-__all__ = ["SpinOrbitalFermions"]
+import jax
+import numpy as np
+from flax import serialization
 
-from netket.hilbert import SpinOrbitalFermions as _deprecated_SpinOrbitalFermions
+import netket as nk
 
 
-_deprecations = {
-    # May 2024
-    "SpinOrbitalFermions": (
-        "netket.experimental.hilbert.SpinOrbitalFermions is deprecated: use "
-        "netket.hilbert.SpinOrbitalFermions (netket >= 3.12)",
-        _deprecated_SpinOrbitalFermions,
-    ),
-}
+def test_init_with_variables_deserialization():
+    # This test used to fail when sharding was disabled
+    hi = nk.hilbert.Spin(0.5, 2)
+    sa = nk.sampler.MetropolisLocal(hi)
+    ma = nk.models.RBM()
+    variables = ma.init(jax.random.key(1), hi.all_states())
 
-from netket.utils.deprecation import deprecation_getattr as _deprecation_getattr
+    variables_np = jax.tree.map(np.asarray, variables)
+    vs = nk.vqs.MCState(sa, ma, n_samples=64, variables=variables_np)
 
-__getattr__ = _deprecation_getattr(__name__, _deprecations)
-del _deprecation_getattr
+    state_bytes = serialization.to_bytes(vs)
 
-from netket.utils import _hide_submodules
+    _ = serialization.from_bytes(vs, state_bytes)
 
-_hide_submodules(__name__)
+    # We simply check that this does not fail..

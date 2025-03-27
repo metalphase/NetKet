@@ -1,11 +1,11 @@
 import netket as nk
 import numpy as np
-import netket.experimental as nkx
 import scipy
 from netket.operator import DiscreteJaxOperator
 
 import pytest
 import jax
+import jax.numpy as jnp
 from jax.experimental.sparse import BCOO
 from netket.jax.sharding import shard_along_axis
 
@@ -116,22 +116,22 @@ operators["Pauli Hamiltonian Jax (_mode=mask)"] = nk.operator.PauliStringsJax(
     ["XX", "YZ", "IZ"], [0.1, 0.2, -1.4], _mode="mask"
 )
 
-hi = nkx.hilbert.SpinOrbitalFermions(5)
-operators["FermionOperator2nd"] = nkx.operator.FermionOperator2nd(
+hi = nk.hilbert.SpinOrbitalFermions(5)
+operators["FermionOperator2nd"] = nk.operator.FermionOperator2nd(
     hi,
     terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
     weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
 )
 
 operators["FermionOperator2ndJax(_mode=default-scan)"] = (
-    nkx.operator.FermionOperator2ndJax(
+    nk.operator.FermionOperator2ndJax(
         hi,
         terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
         weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
     )
 )
 
-operators["FermionOperator2ndJax(_mode=mask)"] = nkx.operator.FermionOperator2ndJax(
+operators["FermionOperator2ndJax(_mode=mask)"] = nk.operator.FermionOperator2ndJax(
     hi,
     terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
     weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
@@ -577,3 +577,48 @@ def test_matmul_sparse_vector(op):
 )
 def test_jax_operator_to_jax_operator(op):
     assert op == op.to_jax_operator()
+
+
+@common.skipif_distributed
+def test_bose_hubbard_precision():
+    # Issue #1994
+    N = 2
+    g = nk.graph.Hypercube(length=2, n_dim=1, pbc=True)
+
+    hi = nk.hilbert.Fock(N=g.n_nodes, n_max=N, n_particles=N)
+    ha = nk.operator.BoseHubbard(hilbert=hi, graph=g, U=1.0, J=1.0, V=0.0)
+    haj = nk.operator.BoseHubbardJax(hilbert=hi, graph=g, U=1.0, J=1.0, V=0.0)
+
+    def gcp(s):
+        xp, mels = ha.get_conn_padded(s)
+        return jnp.asarray(mels).sort(axis=-1)
+
+    def gcpj(s):
+        return haj.get_conn_padded(s)[1].sort(axis=-1)
+
+    s = hi.all_states()
+    assert jax.numpy.all(gcp(s) == gcpj(s))
+
+
+# FIXME: enable Bose Hubbard Complex once fixed
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param(op, id=name)
+        for name, op in op_jax_compatible.items()
+        if not name.startswith("Bose Hubbard Complex")
+    ],
+)
+@common.skipif_sharding
+def test_operator_jax_n_conn(op):
+    """Check that n_conn returns the same result for jax and numba operators"""
+    op_jax = op.to_jax_operator()
+
+    states = op.hilbert.all_states()
+
+    n_conn = op.n_conn(states)
+    n_conn_j = op_jax.n_conn(states)
+
+    assert np.less_equal(n_conn_j, n_conn).all()
+    # FIXME: uncomment once the numba implementation is fixed
+    # np.testing.assert_equal(n_conn_j, n_conn)

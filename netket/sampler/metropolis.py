@@ -23,7 +23,7 @@ import jax
 from flax import linen as nn
 from jax import numpy as jnp
 
-from netket.hilbert import AbstractHilbert, ContinuousHilbert
+from netket.hilbert import AbstractHilbert, ContinuousHilbert, SpinOrbitalFermions
 
 from netket.utils import mpi, wrap_afun
 from netket.utils.types import PyTree, DType
@@ -121,12 +121,23 @@ class MetropolisSamplerState(SamplerState):
         return res
 
     def __repr__(self):
-        if self.n_steps > 0:
-            acc_string = f"# accepted = {self.n_accepted}/{self.n_steps} ({self.acceptance * 100}%), "
-        else:
-            acc_string = ""
+        try:
+            if self.n_steps > 0:
+                acc_string = f"# accepted = {self.n_accepted}/{self.n_steps} ({self.acceptance * 100}%), "
+            else:
+                acc_string = ""
 
-        return f"{type(self).__name__}({acc_string}rng state={self.rng})"
+            return f"{type(self).__name__}({acc_string}rng state={self.rng})"
+        except TypeError:
+            return f"{type(self).__name__}(???, rng state={self.rng})"
+
+    def __process_deserialization_updates__(self, updates):
+        # In netket 3.15 we changed the default dtype of samples
+        # to integer dtypes in most of the time. Without this,
+        # deserialization of old files would be broken.
+        if self.σ.dtype != updates["σ"].dtype:
+            updates["σ"] = updates["σ"].astype(self.σ.dtype)
+        return updates
 
 
 def _assert_good_sample_shape(samples, shape, dtype, obj=""):
@@ -622,7 +633,7 @@ def MetropolisExchange(
 
             import netket as nk
             g = nk.graph.Square(5)
-            hi = nkx.hilbert.SpinOrbitalFermions(g.n_nodes, s=0.5)
+            hi = nk.hilbert.SpinOrbitalFermions(g.n_nodes, s=0.5)
 
             exchange_graph = nk.graph.disjoint_union(g, g)
             print("Exchange graph size:", exchange_graph.n_nodes)
@@ -658,6 +669,22 @@ def MetropolisExchange(
     """
     from .rules import ExchangeRule
 
+    if isinstance(hilbert, SpinOrbitalFermions):
+        warn = True
+        if graph is not None and graph.n_nodes < hilbert.size:
+            warn = True
+        if mpi.rank == 0 and warn:
+            import warnings
+
+            warnings.warn(
+                "Using MetropolisExchange with SpinOrbitalFermions can yield unintended behavior."
+                "Note that MetropolisExchange only exchanges fermions according to the graph edges "
+                "and might not hop fermions of all the spin sectors (see `nk.samplers.rule.FermionHopRule`). "
+                "We recommend using MetropolisFermionHop.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+
     rule = ExchangeRule(clusters=clusters, graph=graph, d_max=d_max)
     return MetropolisSampler(hilbert, rule, **kwargs)
 
@@ -677,9 +704,6 @@ def MetropolisHamiltonian(hilbert, hamiltonian, **kwargs) -> MetropolisSampler:
     finite matrix elements.
     Notice that this sampler preserves by construction all the symmetries
     of the Hamiltonian. This is in generally not true for the local samplers instead.
-
-    This sampler only works on the CPU. To use the Hamiltonian sampler with GPUs,
-    you should use :class:`netket.sampler.MetropolisHamiltonianNumpy`
 
     Args:
         hilbert: The Hilbert space to sample.
@@ -772,3 +796,41 @@ def MetropolisAdjustedLangevin(
 
     rule = LangevinRule(dt=dt, chunk_size=chunk_size)
     return MetropolisSampler(hilbert, rule, **kwargs)
+
+
+def MetropolisFermionHop(
+    hilbert,
+    *,
+    clusters=None,
+    graph=None,
+    d_max=1,
+    spin_symmetric=True,
+    dtype=np.int8,
+    **kwargs,
+) -> MetropolisSampler:
+    r"""
+    This sampler moves (or hops) a random particle to a different but random empty mode.
+    It works similar to MetropolisExchange, but only allows exchanges between occupied and unoccupied modes.
+
+    Args:
+        hilbert: The Hilbert space to sample.
+        d_max: The maximum graph distance allowed for exchanges.
+        spin_symmetric: (default True) If True, exchanges are only allowed between modes with the same spin projection.
+        n_chains: The total number of independent Markov chains across all MPI ranks. Either specify this or `n_chains_per_rank`.
+        n_chains_per_rank: Number of independent chains on every MPI rank (default = 16).
+        sweep_size: Number of sweeps for each step along the chain. Defaults to the number of sites in the Hilbert space.
+                This is equivalent to subsampling the Markov chain.
+        reset_chains: If True, resets the chain state when `reset` is called on every new sampling (default = False).
+        machine_pow: The power to which the machine should be exponentiated to generate the pdf (default = 2).
+        dtype: The dtype of the states sampled (default = np.int8).
+    """
+    from .rules import FermionHopRule
+
+    rule = FermionHopRule(
+        hilbert,
+        clusters=clusters,
+        graph=graph,
+        d_max=d_max,
+        spin_symmetric=spin_symmetric,
+    )
+    return MetropolisSampler(hilbert, rule, dtype=dtype, **kwargs)

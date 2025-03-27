@@ -118,12 +118,12 @@ class HamiltonianRuleNumba(HamiltonianRuleBase):
         σp, log_prob_correction = jax.pure_callback(
             _transition,
             (
-                jax.core.ShapedArray(σ.shape, σ.dtype),
-                jax.core.ShapedArray((σ.shape[0],), log_prob_dtype),
+                jax.ShapeDtypeStruct(σ.shape, σ.dtype),
+                jax.ShapeDtypeStruct((σ.shape[0],), log_prob_dtype),
             ),
             σ,
             rand_vec,
-            # vmap_method="expand_dims", #TODO: Make the callback work with vectorized inputs
+            vmap_method="expand_dims",
         )
 
         return σp, log_prob_correction
@@ -190,7 +190,7 @@ class HamiltonianRuleJax(HamiltonianRuleBase):
         nonzero_i_plus1 = (jnp.cumsum(nonzeros, axis=-1)) * nonzeros
         rand_i_mask = nonzero_i_plus1 == jnp.expand_dims(rand_i + 1, -1)
         # .sum promotes the dtype, so we must convert it to xp dtype
-        x_proposed = (xp * jnp.expand_dims(rand_i_mask, -1)).sum(axis=1).astype(x.dtype)
+        x_proposed = (xp * jnp.expand_dims(rand_i_mask, -1)).sum(axis=1, dtype=xp.dtype)
         n_conn_proposed = self.operator.n_conn(x_proposed)
 
         # _, mels_proposed = self.operator.get_conn_padded(x_proposed)
@@ -210,7 +210,7 @@ class HamiltonianRuleJax(HamiltonianRuleBase):
 
         log_prob_corr = jnp.log(n_conn) - jnp.log(n_conn_proposed)
 
-        return x_proposed, log_prob_corr
+        return x_proposed.astype(x.dtype), log_prob_corr
 
 
 def HamiltonianRule(operator):

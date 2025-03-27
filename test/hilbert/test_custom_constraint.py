@@ -15,7 +15,6 @@
 import pytest
 
 import netket as nk
-from netket import experimental as nkx
 import numpy as np
 
 import jax
@@ -88,18 +87,11 @@ def test_extra_constraint():
 # Constraint checking that first value is 1
 class CustomConstraintPy(nk.hilbert.constraint.DiscreteHilbertConstraint):
     def __call__(self, x):
-        # TODO: When supporting jax>=0.4.35 keep only second
-        vmap_method = {}
-        if nk.utils.module_version(jax) >= (0, 4, 35):
-            vmap_method["vmap_method"] = "expand_dims"
-        else:
-            vmap_method["vectorized"] = True
-
         return jax.pure_callback(
             self._call_py,
             (jax.ShapeDtypeStruct(x.shape[:-1], bool)),
             x,
-            **vmap_method,
+            vmap_method="expand_dims",
         )
 
     def _call_py(self, x):
@@ -187,15 +179,15 @@ def test_constraint_interface_errors():
 
 
 def test_extra_constraint_spin_orbital_fermion():
-    hi = nkx.hilbert.SpinOrbitalFermions(4, s=1 / 2, n_fermions_per_spin=(1, 2))
+    hi = nk.hilbert.SpinOrbitalFermions(4, s=1 / 2, n_fermions_per_spin=(1, 2))
     assert isinstance(hi.constraint, nk.hilbert.constraint.SumOnPartitionConstraint)
     assert np.all(hi.constraint(hi.all_states()))
 
-    hi = nkx.hilbert.SpinOrbitalFermions(4, s=1 / 2, constraint=CustomConstraintPy())
+    hi = nk.hilbert.SpinOrbitalFermions(4, s=1 / 2, constraint=CustomConstraintPy())
     assert isinstance(hi.constraint, CustomConstraintPy)
     assert np.all(hi.constraint(hi.all_states()))
 
-    hi = nkx.hilbert.SpinOrbitalFermions(
+    hi = nk.hilbert.SpinOrbitalFermions(
         4, s=1 / 2, n_fermions_per_spin=(1, 2), constraint=CustomConstraintPy()
     )
     assert isinstance(hi.constraint, nk.hilbert.constraint.ExtraConstraint)
