@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from typing import Any, TYPE_CHECKING
+from collections.abc import Callable
+
 import sys
 
 import orjson
@@ -30,6 +32,17 @@ if TYPE_CHECKING:
     from .history import History
 else:
     History = Any
+
+
+def _format_key(k):
+    if hasattr(k, "key"):
+        return str(k.key)
+    elif hasattr(k, "idx"):
+        return str(k.idx)
+    elif hasattr(k, "name"):
+        return str(k, k.name)
+    else:
+        return str(k)  # fallback
 
 
 class HistoryDict:
@@ -89,7 +102,7 @@ class HistoryDict:
 
         _repr_str = f"HistoryDict with {len(dk)} elements:"
         for keys, val in dk:
-            path = "/".join([val.key for val in keys])
+            path = "/".join([_format_key(k) for k in keys])
             _repr_str += f"\n\t'{path}' -> " + str(val)
 
         return _repr_str
@@ -168,8 +181,8 @@ DESERIALIZATION_REGISTRY = []
 
 
 def register_historydict_deserialization_fun(
-    checker: callable,
-    reconstructor: callable,
+    checker: Callable,
+    reconstructor: Callable,
     precedence: int = 0,
 ):
     """

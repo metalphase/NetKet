@@ -32,8 +32,15 @@
 """
 Utilities for defining custom classes that can be used with jax transformations.
 """
+from typing import TypeVar, overload
+from collections.abc import Callable
 
+# TODO: switch to typing when we require python 3.11
+from typing_extensions import (
+    dataclass_transform,  # pytype: disable=not-supported-yet
+)
 from functools import partial
+
 
 import dataclasses
 import warnings
@@ -57,6 +64,9 @@ try:
     from dataclasses import _FIELDS
 except ImportError:
     _FIELDS = "__dataclass_fields__"
+
+_T = TypeVar("_T", bound=type)
+
 
 _CACHES = "__dataclass_caches__"
 
@@ -300,7 +310,27 @@ def replace_hash_method(data_clz, *, globals=None):
     setattr(data_clz, "__hash__", fun)
 
 
-def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
+_T = TypeVar("_T")
+
+
+@dataclass_transform(field_specifiers=(field,))  # type: ignore[literal-required]
+@overload
+def dataclass(
+    clz: _T, init_doc=MISSING, cache_hash: bool = False, _frozen: bool = True
+) -> _T: ...
+
+
+@dataclass_transform(field_specifiers=(field,))  # type: ignore[literal-required]
+@overload
+def dataclass(
+    init_doc=MISSING, cache_hash: bool = False, _frozen: bool = True
+) -> Callable[[_T], _T]: ...
+
+
+@dataclass_transform(field_specifiers=(field,))  # type: ignore[literal-required]
+def dataclass(
+    clz=None, *, init_doc=MISSING, cache_hash: bool = False, _frozen: bool = True
+):
     """
     Decorator creating a NetKet-flavour dataclass.
     This behaves as a flax dataclass, that is a Frozen python dataclass, with a twist!
@@ -339,10 +369,9 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
         _frozen: (default True) controls whether the resulting class is frozen or not.
             If it is not frozen, extra care should be taken.
     """
+    # Support passing arguments to the decorator (e.g. @dataclass(kw_only=True))
     if clz is None:
-        return partial(
-            dataclass, init_doc=init_doc, cache_hash=cache_hash, _frozen=_frozen
-        )
+        return partial(dataclass, init_doc=init_doc, cache_hash=cache_hash, _frozen=_frozen)  # type: ignore[bad-return-type]
 
     is_pytree = Pytree in clz.__mro__
 
@@ -461,12 +490,14 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
     # flax stuff: identify states
     meta_fields = []
     data_fields = []
-    for name, field_info in getattr(data_clz, _FIELDS, {}).items():
+
+    # for name, field_info in getattr(data_clz, _FIELDS, {}).items():
+    for field_info in dataclasses.fields(data_clz):
         is_pytree_node = field_info.metadata.get("pytree_node", True)
         if is_pytree_node:
-            data_fields.append(name)
+            data_fields.append(field_info.name)
         else:
-            meta_fields.append(name)
+            meta_fields.append(field_info.name)
 
     # List the cache fields
     cache_fields = []
@@ -490,9 +521,11 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
     data_clz.replace = replace
 
     # support for jax pytree flattening unflattening
-    def iterate_clz(x):
+    def iterate_clz_with_keys(x):
         meta = tuple(getattr(x, name) for name in meta_fields)
-        data = tuple(getattr(x, name) for name in data_fields)
+        data = tuple(
+            (jax.tree_util.GetAttrKey(name), getattr(x, name)) for name in data_fields
+        )
         return data, meta
 
     def clz_from_iterable(meta, data):
@@ -501,7 +534,9 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
         kwargs = dict(meta_args + data_args)
         return data_clz(__skip_preprocess=True, **kwargs)
 
-    jax.tree_util.register_pytree_node(data_clz, iterate_clz, clz_from_iterable)
+    jax.tree_util.register_pytree_with_keys(
+        data_clz, iterate_clz_with_keys, clz_from_iterable
+    )
 
     # flax serialization
     skip_serialize_fields = []
@@ -526,19 +561,26 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
                 if name not in state:
                     raise ValueError(
                         f"Missing field {name} in state dict while restoring"
-                        f" an instance of {clz.__name__}"
+                        f" an instance of {clz.__name__},"
+                        f" at path {serialization.current_path()}"
                     )
                 value = getattr(x, name)
                 value_state = state.pop(name)
-                updates[name] = serialization.from_state_dict(value, value_state)
+                updates[name] = serialization.from_state_dict(
+                    value, value_state, name=name
+                )
         if state:
             names = ",".join(state.keys())
             raise ValueError(
                 f'Unknown field(s) "{names}" in state dict while'
                 f" restoring an instance of {clz.__name__}"
+                f" at path {serialization.current_path()}"
             )
         return x.replace(**updates)
 
     serialization.register_serialization_state(data_clz, to_state_dict, from_state_dict)
 
-    return data_clz
+    # add a _netket_dataclass flag to distinguish from regular dataclasses
+    data_clz._netket_dataclass = True
+
+    return data_clz  # type: ignore
